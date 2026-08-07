@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { checkAuth } from "@/lib/auth";
 
-// Vercel kills serverless functions after 10s by default. The chat route
-// calls a reasoning model (sarvam-105b) and the client retries up to 3
-// times on empty/language-mismatched responses, which can exceed that —
-// extend to the max Vercel allows on the Hobby plan.
-export const maxDuration = 60;
+// 300s is Vercel Hobby's actual default AND max duration (with Fluid
+// Compute) — setting it any lower, as a previous version of this file
+// mistakenly did (60s), silently caps requests below what the plan
+// already allows. sarvam-105b's reasoning + a large document context can
+// legitimately take longer than a minute, so this must stay at the max.
+export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   const authError = await checkAuth();
