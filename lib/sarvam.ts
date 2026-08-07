@@ -18,15 +18,15 @@ async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
   }
 }
 
-async function parseJsonOrThrow(res: Response): Promise<any> {
+async function parseJsonOrThrow<T>(res: Response): Promise<T> {
   const data = await res.json().catch(() => null);
   if (!res.ok) {
-    const err = data?.error;
+    const err = (data as { error?: string | { message?: string } } | null)?.error;
     const message =
       typeof err === "string" ? err : (err?.message ?? `Request failed with status ${res.status}`);
     throw new Error(message);
   }
-  return data;
+  return data as T;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -48,7 +48,7 @@ export async function startOcrJob(
     body: formData,
   });
 
-  const data = await parseJsonOrThrow(res);
+  const data = await parseJsonOrThrow<{ jobId: string }>(res);
   return data.jobId;
 }
 

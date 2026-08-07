@@ -43,7 +43,6 @@ export default function ChatPanel({
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [ocrLatencyMs, setOcrLatencyMs] = useState<number | null>(null);
   const [ocrStatusText, setOcrStatusText] = useState<string | null>(null);
   const [ocrError, setOcrError] = useState<string | null>(null);
   const [chatError, setChatError] = useState<string | null>(null);
@@ -52,7 +51,6 @@ export default function ChatPanel({
   const hasDocument = !!uploadedFile;
 
   useEffect(() => {
-    setOcrLatencyMs(null);
     setOcrStatusText(null);
     setOcrError(null);
     setChatError(null);
@@ -207,7 +205,6 @@ export default function ChatPanel({
         console.log("OCR status: FIRST RUN — extracted", result.text.length, "chars");
 
         onExtractedTextChange(result.text, result.pages);
-        setOcrLatencyMs(latency);
         setOcrStatusText(`Document processed — ${result.pages} page${result.pages === 1 ? "" : "s"} extracted`);
 
         await sleep(600);
