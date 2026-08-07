@@ -9,7 +9,7 @@ import {
   detectQuestionLanguage,
   parseAssistantReply,
   runOcrJob,
-  sendChatMessage,
+  streamChatMessage,
 } from "@/lib/sarvam";
 import type { ChatMessage, DisplayMessage } from "@/lib/types";
 
@@ -46,6 +46,8 @@ export default function ChatPanel({
   const [ocrStatusText, setOcrStatusText] = useState<string | null>(null);
   const [ocrError, setOcrError] = useState<string | null>(null);
   const [chatError, setChatError] = useState<string | null>(null);
+  const [streamingText, setStreamingText] = useState<string | null>(null);
+  const [streamingPhase, setStreamingPhase] = useState<"thinking" | "answering" | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const hasDocument = !!uploadedFile;
@@ -59,7 +61,7 @@ export default function ChatPanel({
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, isLoading, ocrStatusText, ocrError, chatError]);
+  }, [messages, isLoading, ocrStatusText, ocrError, chatError, streamingText]);
 
   const askQuestion = async (
     history: DisplayMessage[],
@@ -87,31 +89,47 @@ export default function ChatPanel({
     // disabled (reasoning_effort: null) gives the full budget to the answer
     // and reliably produces content. Only used as a fallback — the initial
     // attempt always reasons normally.
+    //
+    // Streamed rather than a single blocking call: sarvam-105b's reasoning
+    // can take 40-50s+, and the client sees each token as it arrives
+    // (rendered live via setStreamingText) instead of a blank wait. The
+    // retry/validation logic below still runs on the fully accumulated
+    // text once a stream completes — streaming only changes how the text
+    // arrives, not when it's judged.
     const callModel = (options: { retryLanguage: boolean; disableReasoning: boolean }) => {
       const apiMessages = buildMessages(options.retryLanguage);
       const inputChars = apiMessages.reduce((sum, m) => sum + m.content.length, 0);
-      return sendChatMessage(apiMessages, {
-        model: "sarvam-105b",
-        temperature: 0.3,
-        max_tokens: 4096,
-        reasoning_effort: options.disableReasoning ? null : "low",
-      }).then((response) => ({ response, inputChars }));
+      setStreamingText("");
+      setStreamingPhase(null);
+      return streamChatMessage(
+        apiMessages,
+        {
+          model: "sarvam-105b",
+          temperature: 0.3,
+          max_tokens: 4096,
+          reasoning_effort: options.disableReasoning ? null : "low",
+        },
+        (progress) => {
+          setStreamingPhase(progress.phase);
+          setStreamingText(progress.content);
+        }
+      ).then((result) => ({ result, inputChars }));
     };
 
     const MAX_ATTEMPTS = 3;
 
     try {
-      let response, inputChars, rawContent, parsed;
+      let result, inputChars, rawContent, parsed;
       let attempts = 0;
       let disableReasoningNext = false;
 
       do {
         attempts += 1;
-        ({ response, inputChars } = await callModel({
+        ({ result, inputChars } = await callModel({
           retryLanguage: attempts > 1,
           disableReasoning: disableReasoningNext,
         }));
-        rawContent = response.choices?.[0]?.message?.content;
+        rawContent = result.content;
         parsed = rawContent ? parseAssistantReply(rawContent) : null;
 
         if (!parsed) {
@@ -135,7 +153,7 @@ export default function ChatPanel({
       } while (attempts < MAX_ATTEMPTS);
 
       const latencyMs = Date.now() - startedAt;
-      console.log("[Chat] latency:", latencyMs, "attempts:", attempts, "response:", response);
+      console.log("[Chat] latency:", latencyMs, "attempts:", attempts, "finishReason:", result.finishReason);
 
       if (!parsed || !rawContent) {
         setChatError("No response was generated. Try rephrasing your question.");
@@ -165,6 +183,8 @@ export default function ChatPanel({
       console.error("[Chat] failed:", err);
       setChatError(err instanceof Error ? err.message : "Failed to get a response. Try again.");
     } finally {
+      setStreamingText(null);
+      setStreamingPhase(null);
       setIsLoading(false);
     }
   };
@@ -286,7 +306,18 @@ export default function ChatPanel({
             )}
 
             {isThinking && (
-              <MessageBubble message={{ id: "pending", role: "assistant", content: "" }} isPending />
+              streamingText ? (
+                <MessageBubble message={{ id: "streaming", role: "assistant", content: streamingText }} />
+              ) : streamingPhase === "thinking" ? (
+                <div className="flex justify-start">
+                  <div className="flex items-center gap-2 rounded-card border border-border bg-card px-4 py-2.5 text-sm">
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-accent-primary" />
+                    <span className="text-accent-primary">Processing...</span>
+                  </div>
+                </div>
+              ) : (
+                <MessageBubble message={{ id: "pending", role: "assistant", content: "" }} isPending />
+              )
             )}
           </div>
         )}

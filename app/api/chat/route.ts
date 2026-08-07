@@ -32,9 +32,8 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify(body),
     });
 
-    const data = await upstreamRes.json().catch(() => null);
-
     if (!upstreamRes.ok) {
+      const data = await upstreamRes.json().catch(() => null);
       const status = upstreamRes.status;
       const message =
         data?.error ??
@@ -46,6 +45,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: message }, { status });
     }
 
+    // Sarvam's reasoning model can take 40-50s+ to fully generate a
+    // response. Proxying the raw SSE stream straight through (instead of
+    // buffering the whole thing with .json()) lets the client render
+    // tokens as they arrive rather than showing a blank screen the whole
+    // time — the total wait doesn't shrink, but the perceived one does.
+    if (body.stream && upstreamRes.body) {
+      return new Response(upstreamRes.body, {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        },
+      });
+    }
+
+    const data = await upstreamRes.json();
     return NextResponse.json(data);
   } catch (err) {
     return NextResponse.json({ error: (err as Error).message }, { status: 500 });

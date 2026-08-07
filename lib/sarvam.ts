@@ -112,6 +112,86 @@ export async function sendChatMessage(
   return parseJsonOrThrow(res);
 }
 
+export interface StreamChatResult {
+  content: string;
+  finishReason: string | null;
+}
+
+export interface StreamProgress {
+  // sarvam-105b emits invisible "thinking" tokens (delta.reasoning_content)
+  // before the real answer (delta.content) — "thinking" fires while only
+  // reasoning tokens are arriving, so the UI can show a status instead of a
+  // silent wait, without exposing the raw chain-of-thought text itself.
+  phase: "thinking" | "answering";
+  content: string;
+}
+
+export async function streamChatMessage(
+  messages: ChatMessage[],
+  options: ChatCompletionOptions,
+  onProgress: (progress: StreamProgress) => void
+): Promise<StreamChatResult> {
+  const res = await apiFetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages, ...options, stream: true }),
+  });
+
+  if (!res.ok) {
+    // Error responses aren't streamed (see app/api/chat/route.ts) — they
+    // come back as regular JSON, same shape parseJsonOrThrow expects.
+    await parseJsonOrThrow(res);
+  }
+
+  if (!res.body) {
+    throw new Error("No response stream received.");
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let accumulated = "";
+  let finishReason: string | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+
+      const payload = trimmed.slice(5).trim();
+      if (payload === "[DONE]") continue;
+
+      try {
+        const chunk = JSON.parse(payload);
+        const delta = chunk.choices?.[0]?.delta;
+
+        if (delta?.content) {
+          accumulated += delta.content;
+          onProgress({ phase: "answering", content: accumulated });
+        } else if (delta?.reasoning_content) {
+          onProgress({ phase: "thinking", content: accumulated });
+        }
+
+        if (chunk.choices?.[0]?.finish_reason) {
+          finishReason = chunk.choices[0].finish_reason;
+        }
+      } catch {
+        // Malformed/partial SSE fragment — shouldn't happen given the
+        // line-buffering above, but skip rather than crash the stream.
+      }
+    }
+  }
+
+  return { content: accumulated, finishReason };
+}
+
 export function buildSystemPrompt(extractedText: string): string {
   return `You are DocuSamvad, an AI document assistant built for India.
 
